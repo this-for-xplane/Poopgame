@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>학교 탈출: 좀비 러너 (광고 버전)</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #222; font-family: 'Courier New', Courier, monospace; touch-action: none; color: white;}
+        canvas { display: block; margin: 0 auto; background: #333; border-left: 2px solid #555; border-right: 2px solid #555; }
+        #ui { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); text-align: center; width: 100%; pointer-events: none; }
+        .stat { font-size: 18px; font-weight: bold; text-shadow: 2px 2px 2px black; }
+        #msg { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #ff4444; font-size: 40px; text-align: center; display: none; text-shadow: 2px 2px 4px black; }
+    </style>
+</head>
+<body>
+    <div id="ui">
+        <div class="stat">병사: <span id="count" style="color: #f1c40f;">1</span> | 공격력: <span id="atk" style="color: #2ecc71;">10</span></div>
+    </div>
+    <div id="msg">GAME OVER<br><span style="font-size: 20px; color: white;">클릭하여 다시 시도</span></div>
+    <canvas id="gameCanvas"></canvas>
+
+<script>
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+const countEl = document.getElementById('count');
+const atkEl = document.getElementById('atk');
+const msgEl = document.getElementById('msg');
+
+// --- 게임 설정 (광고 느낌 낭낭하게) ---
+canvas.width = Math.min(window.innerWidth, 480); // 모바일 비율 고정
+canvas.height = window.innerHeight;
+
+let gameState = 'PLAYING'; // PLAYING, GAMEOVER
+let player = { x: canvas.width / 2, y: canvas.height - 120, size: 15 };
+let mouseX = player.x;
+
+let soldiers = 1;
+let baseAtk = 10; // 병사 1명당 공격력
+let bulletPower = baseAtk; 
+
+let objects = []; // 게이트, 벽, 좀비 통합 관리
+let bullets = [];
+let frameCount = 0;
+
+// --- 유틸리티 함수 ---
+const rand = (min, max) => Math.random() * (max - min) + min;
+
+// --- 객체 생성 로직 ---
+function spawnObject() {
+    if (gameState !== 'PLAYING') return;
+
+    const roll = Math.random();
+    
+    // 1. 낮은 확률로 등장하는 '강화 벽' (3초 공격)
+    if (roll < 0.15) { // 15% 확률
+        objects.push({
+            type: 'WALL',
+            x: rand(50, canvas.width - 150),
+            y: -100,
+            w: 100, h: 80,
+            hp: baseAtk * soldiers * 2.5, // 현재 화력으로 약 2.5초~3초 쏴야 부서짐
+            maxHp: baseAtk * soldiers * 2.5,
+            color: '#95a5a6' // 회색 벽
+        });
+    } 
+    // 2. 일반적인 '숫자 게이트' (병사 증식)
+    else if (roll < 0.6) { // 45% 확률
+        const isGood = Math.random() > 0.3; // 70% 확률로 좋은 게이트
+        const gateType = isGood ? (Math.random() > 0.5 ? 'x' : '+') : '-';
+        let val = isGood ? (gateType === 'x' ? 2 : 10) : 5;
+
+        objects.push({
+            type: 'GATE',
+            x: rand(0, canvas.width/2), // 좌우 랜덤
+            y: -100,
+            w: canvas.width / 2, h: 60,
+            gateType: gateType,
+            value: val,
+            color: isGood ? '#3498db' : '#e74c3c',
+            passed: false
+        });
+        // 짝꿍 게이트 생성 (광고 특: 한쪽은 무조건 나쁨)
+        objects.push({
+            type: 'GATE',
+            x: objects[objects.length-1].x === 0 ? canvas.width/2 : 0,
+            y: -100,
+            w: canvas.width / 2, h: 60,
+            gateType: isGood ? '-' : '+',
+            value: isGood ? 10 : 5,
+            color: isGood ? '#e74c3c' : '#3498db',
+            passed: false
+        });
+    }
+    // 3. '좀비 무리' (다가옴)
+    else { // 40% 확률
+        objects.push({
+            type: 'ZOMBIE',
+            x: rand(20, canvas.width - 40),
+            y: -50,
+            radius: rand(15, 30),
+            hp: baseAtk * soldiers * 0.8, // 한두방이면 죽음, 대신 여러마리
+            speed: rand(1, 2),
+            color: '#2ecc71' // 좀비 초록
+        });
+    }
+}
+
+// --- 게임 초기화 ---
+function init() {
+    soldiers = 1;
+    baseAtk = 10;
+    bulletPower = baseAtk;
+    objects = [];
+    bullets = [];
+    frameCount = 0;
+    gameState = 'PLAYING';
+    msgEl.style.display = 'none';
+    player.x = canvas.width / 2;
+    mouseX = player.x;
+}
+
+// --- 입력 처리 ---
+canvas.addEventListener('mousemove', (e) => mouseX = e.offsetX);
+canvas.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    mouseX = e.touches[0].clientX - canvas.offsetLeft;
+}, { passive: false });
+canvas.addEventListener('mousedown', () => { if(gameState === 'GAMEOVER') init(); });
+
+// --- 메인 루프 (Update & Draw) ---
+function loop() {
+    frameCount++;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // 배경 (도로)
+    ctx.fillStyle = '#333'; ctx.fillRect(0, 0, canvas.width, canvas.height);
+    for(let i=0; i<5; i++) { // 차선
+        ctx.fillStyle = '#555'; ctx.fillRect(canvas.width/2 - 2, (i*200 + frameCount*3)%canvas.height, 4, 100);
+    }
+
+    if (gameState === 'PLAYING') {
+        // 1. 플레이어 이동 (부드럽게)
+        player.x += (mouseX - player.x) * 0.15;
+        player.x = Math.max(player.size, Math.min(canvas.width - player.size, player.x));
+
+        // 2. 자동 공격 (총알 발사) - 0.1초마다
+        if (frameCount % 6 === 0) {
+            bullets.push({ x: player.x, y: player.y, speed: 10, power: bulletPower });
+        }
+
+        // 3. 주기적 객체 생성
+        if (frameCount % 120 === 0) spawnObject();
+
+        // UI 업데이트
+        countEl.innerText = soldiers;
+        atkEl.innerText = bulletPower.toFixed(0);
+    }
+
+    // --- 객체 업데이트 및 그리기 ---
+    
+    // 총알 처리
+    bullets.forEach((b, bi) => {
+        b.y -= b.speed;
+        ctx.fillStyle = '#f1c40f'; ctx.fillRect(b.x - 2, b.y, 4, 10);
+        if (b.y < 0) bullets.splice(bi, 1);
+    });
+
+    objects.forEach((obj, oi) => {
+        let isDestroyed = false;
+
+        if (obj.type === 'GATE') {
+            obj.y += 4; // 이동
+            // 그리기
+            ctx.fillStyle = obj.color; ctx.globalAlpha = 0.5;
+            ctx.fillRect(obj.x, obj.y, obj.w, obj.h); ctx.globalAlpha = 1.0;
+            ctx.fillStyle = 'white'; ctx.font = 'bold 25px Courier New'; ctx.textAlign = 'center';
+            ctx.fillText(`${obj.gateType}${obj.value}`, obj.x + obj.w/2, obj.y + 40);
+
+            // 충돌 (플레이어)
+            if (!obj.passed && player.y < obj.y + obj.h && player.y > obj.y && player.x > obj.x && player.x < obj.x + obj.w) {
+                if (obj.gateType === '+') soldiers += obj.value;
+                if (obj.gateType === 'x') soldiers *= obj.value;
+                if (obj.gateType === '-') soldiers = Math.max(1, soldiers - obj.value);
+                obj.passed = true;
+                bulletPower = baseAtk * soldiers; // 화력 갱신
+            }
+        } 
+        else if (obj.type === 'WALL') {
+            obj.y += 2; // 벽은 천천히 옴
+            
+            // 총알 충돌 확인
+            bullets.forEach((b, bi) => {
+                if (b.x > obj.x && b.x < obj.x + obj.w && b.y > obj.y && b.y < obj.y + obj.h) {
+                    obj.hp -= b.power;
+                    bullets.splice(bi, 1);
+                    if (obj.hp <= 0) isDestroyed = true;
+                }
+            });
+
+            if (isDestroyed) {
+                // 부서짐 -> 공격력 20% 상승 (핵심 로직)
+                baseAtk *= 1.2;
+                bulletPower = baseAtk * soldiers;
+                objects.splice(oi, 1);
+                // 파편 이펙트 대신 색상 반짝임
+                ctx.fillStyle = 'white'; ctx.fillRect(obj.x, obj.y, obj.w, obj.h);
+            } else {
+                // 그리기 (체력바 포함)
+                ctx.fillStyle = obj.color; ctx.fillRect(obj.x, obj.y, obj.w, obj.h);
+                ctx.strokeStyle = '#7f8c8d'; ctx.lineWidth = 2; ctx.strokeRect(obj.x, obj.y, obj.w, obj.h);
+                // HP bar
+                ctx.fillStyle = 'red'; ctx.fillRect(obj.x, obj.y - 10, obj.w, 5);
+                ctx.fillStyle = '#2ecc71'; ctx.fillRect(obj.x, obj.y - 10, obj.w * (obj.hp / obj.maxHp), 5);
+            }
+        }
+        else if (obj.type === 'ZOMBIE') {
+            obj.y += obj.speed; // 다가옴
+            
+            // 총알 충돌
+            bullets.forEach((b, bi) => {
+                const dx = b.x - obj.x; const dy = b.y - obj.y;
+                if (Math.sqrt(dx*dx + dy*dy) < obj.radius) {
+                    obj.hp -= b.power;
+                    bullets.splice(bi, 1);
+                    if (obj.hp <= 0) isDestroyed = true;
+                }
+            });
+
+            if (isDestroyed) {
+                objects.splice(oi, 1);
+            } else {
+                // 그리기 (좀비처럼 보이게 징그럽게 원)
+                ctx.fillStyle = obj.color;
+                ctx.beginPath(); ctx.arc(obj.x, obj.y, obj.radius, 0, Math.PI*2); ctx.fill();
+                // 눈 그리기
+                ctx.fillStyle = 'black'; ctx.beginPath(); ctx.arc(obj.x - 8, obj.y - 5, 3, 0, Math.PI*2); ctx.fill();
+                ctx.beginPath(); ctx.arc(obj.x + 8, obj.y - 5, 3, 0, Math.PI*2); ctx.fill();
+
+                // 플레이어 충돌 (게임 오버)
+                const pdx = player.x - obj.x; const pdy = player.y - obj.y;
+                if (Math.sqrt(pdx*pdx + pdy*pdy) < obj.radius + player.size) {
+                    gameState = 'GAMEOVER';
+                    msgEl.style.display = 'block';
+                }
+            }
+        }
+
+        // 화면 밖 객체 삭제
+        if (obj.y > canvas.height + 100) objects.splice(oi, 1);
+    });
+
+    // --- 플레이어(병사들) 그리기 ---
+    if (gameState === 'PLAYING') {
+        const drawCount = Math.min(soldiers, 30); // 성능 위해 30명만 표시
+        const rows = Math.ceil(Math.sqrt(drawCount));
+        const spacing = 12;
+        ctx.fillStyle = '#f1c40f'; // 대장(마우스 위치)
+        ctx.beginPath(); ctx.arc(player.x, player.y, player.size, 0, Math.PI*2); ctx.fill();
+        
+        ctx.fillStyle = '#f39c12'; ctx.globalAlpha = 0.7; // 나머지 병사들
+        for(let i=1; i<drawCount; i++) {
+            const offsetX = (i % rows - rows/2) * spacing;
+            const offsetY = Math.floor(i / rows) * spacing + 20;
+            ctx.beginPath(); ctx.arc(player.x + offsetX, player.y + offsetY, 5, 0, Math.PI*2); ctx.fill();
+        }
+        ctx.globalAlpha = 1.0;
+    }
+
+    requestAnimationFrame(loop);
+}
+
+// 초기 실행
+init();
+loop();
+
+// 창 크기 변경 대응
+window.addEventListener('resize', () => {
+    canvas.height = window.innerHeight;
+    player.y = canvas.height - 120;
+});
+
+</script>
+</body>
+</html>
