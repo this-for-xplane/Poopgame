@@ -3,282 +3,378 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>학교 탈출: 좀비 러너 (광고 버전)</title>
+    <title>3D 좀비 러너: 울트라 화력 업그레이드</title>
     <style>
-        body { margin: 0; overflow: hidden; background: #222; font-family: 'Courier New', Courier, monospace; touch-action: none; color: white;}
-        canvas { display: block; margin: 0 auto; background: #333; border-left: 2px solid #555; border-right: 2px solid #555; }
-        #ui { position: absolute; top: 10px; left: 50%; transform: translateX(-50%); text-align: center; width: 100%; pointer-events: none; }
-        .stat { font-size: 18px; font-weight: bold; text-shadow: 2px 2px 2px black; }
-        #msg { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #ff4444; font-size: 40px; text-align: center; display: none; text-shadow: 2px 2px 4px black; }
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Arial', sans-serif; }
+        #ui-container {
+            position: absolute; top: 20px; left: 20px; color: white; pointer-events: none;
+            text-shadow: 2px 2px 6px rgba(0,0,0,1); z-index: 10;
+        }
+        .stat-item { font-size: 24px; margin-bottom: 8px; font-weight: 900; }
+        #overlay {
+            position: absolute; top: 0; left: 0; width: 100vw; height: 100vh;
+            background: rgba(0,0,0,0.85); color: #ff3333; 
+            display: none; flex-direction: column; justify-content: center; align-items: center;
+            z-index: 100; cursor: pointer;
+        }
+        #overlay h1 { font-size: 80px; margin: 0; text-transform: uppercase; letter-spacing: 5px; }
+        #overlay p { font-size: 24px; color: white; margin-top: 20px; font-weight: bold; }
+        canvas { display: block; }
     </style>
 </head>
 <body>
-    <div id="ui">
-        <div class="stat">병사: <span id="count" style="color: #f1c40f;">1</span> | 공격력: <span id="atk" style="color: #2ecc71;">10</span></div>
+    <div id="ui-container">
+        <div class="stat-item" style="color: #58ccff;">SOLDIERS: <span id="soldier-count">1</span></div>
+        <div class="stat-item" style="color: #ffcc00;">TOTAL ATK: <span id="total-atk">10</span></div>
+        <div class="stat-item">DISTANCE: <span id="dist-val">0</span>m</div>
     </div>
-    <div id="msg">GAME OVER<br><span style="font-size: 20px; color: white;">클릭하여 다시 시도</span></div>
-    <canvas id="gameCanvas"></canvas>
 
-<script>
-const canvas = document.getElementById('gameCanvas');
-const ctx = canvas.getContext('2d');
-const countEl = document.getElementById('count');
-const atkEl = document.getElementById('atk');
-const msgEl = document.getElementById('msg');
+    <div id="overlay" onclick="restart()">
+        <h1>GAME OVER</h1>
+        <p>클릭하여 다시 시작 (또는 SPACE 키)</p>
+    </div>
 
-// --- 게임 설정 (광고 느낌 낭낭하게) ---
-canvas.width = Math.min(window.innerWidth, 480); // 모바일 비율 고정
-canvas.height = window.innerHeight;
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 
-let gameState = 'PLAYING'; // PLAYING, GAMEOVER
-let player = { x: canvas.width / 2, y: canvas.height - 120, size: 15 };
-let mouseX = player.x;
-
-let soldiers = 1;
-let baseAtk = 10; // 병사 1명당 공격력
-let bulletPower = baseAtk; 
-
-let objects = []; // 게이트, 벽, 좀비 통합 관리
-let bullets = [];
-let frameCount = 0;
-
-// --- 유틸리티 함수 ---
-const rand = (min, max) => Math.random() * (max - min) + min;
-
-// --- 객체 생성 로직 ---
-function spawnObject() {
-    if (gameState !== 'PLAYING') return;
-
-    const roll = Math.random();
-    
-    // 1. 낮은 확률로 등장하는 '강화 벽' (3초 공격)
-    if (roll < 0.15) { // 15% 확률
-        objects.push({
-            type: 'WALL',
-            x: rand(50, canvas.width - 150),
-            y: -100,
-            w: 100, h: 80,
-            hp: baseAtk * soldiers * 2.5, // 현재 화력으로 약 2.5초~3초 쏴야 부서짐
-            maxHp: baseAtk * soldiers * 2.5,
-            color: '#95a5a6' // 회색 벽
-        });
-    } 
-    // 2. 일반적인 '숫자 게이트' (병사 증식)
-    else if (roll < 0.6) { // 45% 확률
-        const isGood = Math.random() > 0.3; // 70% 확률로 좋은 게이트
-        const gateType = isGood ? (Math.random() > 0.5 ? 'x' : '+') : '-';
-        let val = isGood ? (gateType === 'x' ? 2 : 10) : 5;
-
-        objects.push({
-            type: 'GATE',
-            x: rand(0, canvas.width/2), // 좌우 랜덤
-            y: -100,
-            w: canvas.width / 2, h: 60,
-            gateType: gateType,
-            value: val,
-            color: isGood ? '#3498db' : '#e74c3c',
-            passed: false
-        });
-        // 짝꿍 게이트 생성 (광고 특: 한쪽은 무조건 나쁨)
-        objects.push({
-            type: 'GATE',
-            x: objects[objects.length-1].x === 0 ? canvas.width/2 : 0,
-            y: -100,
-            w: canvas.width / 2, h: 60,
-            gateType: isGood ? '-' : '+',
-            value: isGood ? 10 : 5,
-            color: isGood ? '#e74c3c' : '#3498db',
-            passed: false
-        });
-    }
-    // 3. '좀비 무리' (다가옴)
-    else { // 40% 확률
-        objects.push({
-            type: 'ZOMBIE',
-            x: rand(20, canvas.width - 40),
-            y: -50,
-            radius: rand(15, 30),
-            hp: baseAtk * soldiers * 0.8, // 한두방이면 죽음, 대신 여러마리
-            speed: rand(1, 2),
-            color: '#2ecc71' // 좀비 초록
-        });
-    }
-}
-
-// --- 게임 초기화 ---
-function init() {
-    soldiers = 1;
-    baseAtk = 10;
-    bulletPower = baseAtk;
-    objects = [];
-    bullets = [];
-    frameCount = 0;
-    gameState = 'PLAYING';
-    msgEl.style.display = 'none';
-    player.x = canvas.width / 2;
-    mouseX = player.x;
-}
-
-// --- 입력 처리 ---
-canvas.addEventListener('mousemove', (e) => mouseX = e.offsetX);
-canvas.addEventListener('touchmove', (e) => {
-    e.preventDefault();
-    mouseX = e.touches[0].clientX - canvas.offsetLeft;
-}, { passive: false });
-canvas.addEventListener('mousedown', () => { if(gameState === 'GAMEOVER') init(); });
-
-// --- 메인 루프 (Update & Draw) ---
-function loop() {
-    frameCount++;
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // 배경 (도로)
-    ctx.fillStyle = '#333'; ctx.fillRect(0, 0, canvas.width, canvas.height);
-    for(let i=0; i<5; i++) { // 차선
-        ctx.fillStyle = '#555'; ctx.fillRect(canvas.width/2 - 2, (i*200 + frameCount*3)%canvas.height, 4, 100);
-    }
-
-    if (gameState === 'PLAYING') {
-        // 1. 플레이어 이동 (부드럽게)
-        player.x += (mouseX - player.x) * 0.15;
-        player.x = Math.max(player.size, Math.min(canvas.width - player.size, player.x));
-
-        // 2. 자동 공격 (총알 발사) - 0.1초마다
-        if (frameCount % 6 === 0) {
-            bullets.push({ x: player.x, y: player.y, speed: 10, power: bulletPower });
-        }
-
-        // 3. 주기적 객체 생성
-        if (frameCount % 120 === 0) spawnObject();
-
-        // UI 업데이트
-        countEl.innerText = soldiers;
-        atkEl.innerText = bulletPower.toFixed(0);
-    }
-
-    // --- 객체 업데이트 및 그리기 ---
-    
-    // 총알 처리
-    bullets.forEach((b, bi) => {
-        b.y -= b.speed;
-        ctx.fillStyle = '#f1c40f'; ctx.fillRect(b.x - 2, b.y, 4, 10);
-        if (b.y < 0) bullets.splice(bi, 1);
-    });
-
-    objects.forEach((obj, oi) => {
-        let isDestroyed = false;
-
-        if (obj.type === 'GATE') {
-            obj.y += 4; // 이동
-            // 그리기
-            ctx.fillStyle = obj.color; ctx.globalAlpha = 0.5;
-            ctx.fillRect(obj.x, obj.y, obj.w, obj.h); ctx.globalAlpha = 1.0;
-            ctx.fillStyle = 'white'; ctx.font = 'bold 25px Courier New'; ctx.textAlign = 'center';
-            ctx.fillText(`${obj.gateType}${obj.value}`, obj.x + obj.w/2, obj.y + 40);
-
-            // 충돌 (플레이어)
-            if (!obj.passed && player.y < obj.y + obj.h && player.y > obj.y && player.x > obj.x && player.x < obj.x + obj.w) {
-                if (obj.gateType === '+') soldiers += obj.value;
-                if (obj.gateType === 'x') soldiers *= obj.value;
-                if (obj.gateType === '-') soldiers = Math.max(1, soldiers - obj.value);
-                obj.passed = true;
-                bulletPower = baseAtk * soldiers; // 화력 갱신
-            }
-        } 
-        else if (obj.type === 'WALL') {
-            obj.y += 2; // 벽은 천천히 옴
-            
-            // 총알 충돌 확인
-            bullets.forEach((b, bi) => {
-                if (b.x > obj.x && b.x < obj.x + obj.w && b.y > obj.y && b.y < obj.y + obj.h) {
-                    obj.hp -= b.power;
-                    bullets.splice(bi, 1);
-                    if (obj.hp <= 0) isDestroyed = true;
-                }
-            });
-
-            if (isDestroyed) {
-                // 부서짐 -> 공격력 20% 상승 (핵심 로직)
-                baseAtk *= 1.2;
-                bulletPower = baseAtk * soldiers;
-                objects.splice(oi, 1);
-                // 파편 이펙트 대신 색상 반짝임
-                ctx.fillStyle = 'white'; ctx.fillRect(obj.x, obj.y, obj.w, obj.h);
-            } else {
-                // 그리기 (체력바 포함)
-                ctx.fillStyle = obj.color; ctx.fillRect(obj.x, obj.y, obj.w, obj.h);
-                ctx.strokeStyle = '#7f8c8d'; ctx.lineWidth = 2; ctx.strokeRect(obj.x, obj.y, obj.w, obj.h);
-                // HP bar
-                ctx.fillStyle = 'red'; ctx.fillRect(obj.x, obj.y - 10, obj.w, 5);
-                ctx.fillStyle = '#2ecc71'; ctx.fillRect(obj.x, obj.y - 10, obj.w * (obj.hp / obj.maxHp), 5);
-            }
-        }
-        else if (obj.type === 'ZOMBIE') {
-            obj.y += obj.speed; // 다가옴
-            
-            // 총알 충돌
-            bullets.forEach((b, bi) => {
-                const dx = b.x - obj.x; const dy = b.y - obj.y;
-                if (Math.sqrt(dx*dx + dy*dy) < obj.radius) {
-                    obj.hp -= b.power;
-                    bullets.splice(bi, 1);
-                    if (obj.hp <= 0) isDestroyed = true;
-                }
-            });
-
-            if (isDestroyed) {
-                objects.splice(oi, 1);
-            } else {
-                // 그리기 (좀비처럼 보이게 징그럽게 원)
-                ctx.fillStyle = obj.color;
-                ctx.beginPath(); ctx.arc(obj.x, obj.y, obj.radius, 0, Math.PI*2); ctx.fill();
-                // 눈 그리기
-                ctx.fillStyle = 'black'; ctx.beginPath(); ctx.arc(obj.x - 8, obj.y - 5, 3, 0, Math.PI*2); ctx.fill();
-                ctx.beginPath(); ctx.arc(obj.x + 8, obj.y - 5, 3, 0, Math.PI*2); ctx.fill();
-
-                // 플레이어 충돌 (게임 오버)
-                const pdx = player.x - obj.x; const pdy = player.y - obj.y;
-                if (Math.sqrt(pdx*pdx + pdy*pdy) < obj.radius + player.size) {
-                    gameState = 'GAMEOVER';
-                    msgEl.style.display = 'block';
-                }
-            }
-        }
-
-        // 화면 밖 객체 삭제
-        if (obj.y > canvas.height + 100) objects.splice(oi, 1);
-    });
-
-    // --- 플레이어(병사들) 그리기 ---
-    if (gameState === 'PLAYING') {
-        const drawCount = Math.min(soldiers, 30); // 성능 위해 30명만 표시
-        const rows = Math.ceil(Math.sqrt(drawCount));
-        const spacing = 12;
-        ctx.fillStyle = '#f1c40f'; // 대장(마우스 위치)
-        ctx.beginPath(); ctx.arc(player.x, player.y, player.size, 0, Math.PI*2); ctx.fill();
+    <script>
+        let scene, camera, renderer;
+        let playerGroup, road;
+        let soldiers = 1;
+        let baseAtk = 10;
+        let playerSize = 1;
         
-        ctx.fillStyle = '#f39c12'; ctx.globalAlpha = 0.7; // 나머지 병사들
-        for(let i=1; i<drawCount; i++) {
-            const offsetX = (i % rows - rows/2) * spacing;
-            const offsetY = Math.floor(i / rows) * spacing + 20;
-            ctx.beginPath(); ctx.arc(player.x + offsetX, player.y + offsetY, 5, 0, Math.PI*2); ctx.fill();
+        let objects = []; 
+        let bullets = [];
+        let gameDistance = 0;
+        let isGameOver = false;
+        let frameCount = 0;
+        let targetX = 0;
+        let keyState = {};
+
+        const RUN_SPEED = 0.28; 
+        const ROAD_WIDTH = 12; 
+        const SPAWN_INTERVAL = 90; // 약간 더 자주 생성
+
+        function init() {
+            scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x020208);
+            scene.fog = new THREE.Fog(0x020208, 50, 200);
+
+            camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 16, 28); // 시야를 더 확보하기 위해 카메라를 뒤로 뺌
+            camera.lookAt(0, 0, -5);
+
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio > 2 ? 2 : window.devicePixelRatio); // 성능과 선명도 조절
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
+
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
+            scene.add(ambientLight);
+            const sunLight = new THREE.DirectionalLight(0xffffff, 1.2);
+            sunLight.position.set(15, 40, 20);
+            sunLight.castShadow = true;
+            scene.add(sunLight);
+
+            const roadGeo = new THREE.PlaneGeometry(ROAD_WIDTH, 5000);
+            const roadMat = new THREE.MeshPhongMaterial({ color: 0x111111 });
+            road = new THREE.Mesh(roadGeo, roadMat);
+            road.rotation.x = -Math.PI / 2;
+            road.receiveShadow = true;
+            scene.add(road);
+
+            playerGroup = new THREE.Group();
+            scene.add(playerGroup);
+            updateSoldierModels();
+
+            // 리스너 등록
+            window.addEventListener('resize', onWindowResize);
+            window.addEventListener('keydown', (e) => { 
+                keyState[e.code] = true; 
+                if(isGameOver && (e.code === 'Space' || e.code === 'Enter')) restart();
+            });
+            window.addEventListener('keyup', (e) => { keyState[e.code] = false; });
+            
+            const handleMove = (x) => {
+                targetX = (x / window.innerWidth - 0.5) * ROAD_WIDTH * 1.5;
+            };
+            window.addEventListener('mousemove', (e) => handleMove(e.clientX));
+            window.addEventListener('touchmove', (e) => handleMove(e.touches[0].clientX));
+
+            animate();
         }
-        ctx.globalAlpha = 1.0;
-    }
 
-    requestAnimationFrame(loop);
-}
+        // --- 텍스트 텍스처 (크기 및 외곽선 강화) ---
+        function createTextTexture(text, color = "white", isKit = false) {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            canvas.width = 512;
+            canvas.height = 256;
+            
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            const fontSize = isKit ? 180 : 150;
+            ctx.font = `900 ${fontSize}px Arial Black`;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            
+            // 검은색 3중 외곽선으로 가독성 보장
+            ctx.strokeStyle = "black";
+            ctx.lineWidth = 24;
+            ctx.strokeText(text, 256, 128);
+            ctx.lineWidth = 12;
+            ctx.strokeText(text, 256, 128);
+            
+            ctx.fillStyle = color;
+            ctx.fillText(text, 256, 128);
+            
+            const texture = new THREE.CanvasTexture(canvas);
+            texture.needsUpdate = true;
+            return texture;
+        }
 
-// 초기 실행
-init();
-loop();
+        function updateSoldierModels() {
+            while(playerGroup.children.length > 0) playerGroup.remove(playerGroup.children[0]);
+            
+            const displayLimit = 40; // 모델 렌더링 수 제한 (렉 방지)
+            const actualDisplay = Math.min(soldiers, displayLimit);
+            const rows = Math.ceil(Math.sqrt(actualDisplay));
+            const spacing = 1.1; 
 
-// 창 크기 변경 대응
-window.addEventListener('resize', () => {
-    canvas.height = window.innerHeight;
-    player.y = canvas.height - 120;
-});
+            for(let i=0; i<actualDisplay; i++) {
+                const s = new THREE.Group();
+                const body = new THREE.Mesh(
+                    new THREE.BoxGeometry(0.7, 1.4, 0.7),
+                    new THREE.MeshPhongMaterial({ color: 0x0088ff })
+                );
+                body.position.y = 0.7;
+                body.castShadow = true;
+                s.add(body);
 
-</script>
+                const r = Math.floor(i / rows);
+                const c = i % rows;
+                s.position.set((c - (rows-1)/2) * spacing, 0, r * spacing);
+                s.scale.set(playerSize, playerSize, playerSize);
+                playerGroup.add(s);
+            }
+
+            // 병사 무리 머리 위에 총 숫자 표시 (매우 중요)
+            const spriteMat = new THREE.SpriteMaterial({ map: createTextTexture(soldiers, "#ffffff") });
+            const sprite = new THREE.Sprite(spriteMat);
+            sprite.position.y = 6;
+            sprite.scale.set(8, 4, 1);
+            playerGroup.add(sprite);
+        }
+
+        function spawnObject() {
+            const zPos = -180;
+            const roll = Math.random();
+
+            if (roll < 0.25) { // 업그레이드 키트
+                const group = new THREE.Group();
+                const geo = new THREE.BoxGeometry(5, 5, 5);
+                const mat = new THREE.MeshPhongMaterial({ color: 0xffaa00, emissive: 0x221100 });
+                const kit = new THREE.Mesh(geo, mat);
+                kit.castShadow = true;
+                group.add(kit);
+
+                // 현재 공격력에 비례한 높은 체력
+                const hp = Math.floor(baseAtk * soldiers * 4.5);
+                const reward = ['SIZE', 'ATK', 'RATE'][Math.floor(Math.random() * 3)];
+                
+                const spriteMat = new THREE.SpriteMaterial({ map: createTextTexture(hp, "#ffff00", true) });
+                const sprite = new THREE.Sprite(spriteMat);
+                sprite.position.y = 6; // 키트 머리 위로 위치
+                sprite.scale.set(12, 6, 1);
+                group.add(sprite);
+
+                group.position.set(Math.random() * 8 - 4, 2.5, zPos);
+                group.userData = { type: 'KIT', hp: hp, maxHp: hp, reward: reward, textSprite: sprite };
+                scene.add(group);
+                objects.push(group);
+            } 
+            else if (roll < 0.65) { // 게이트
+                const isGood = Math.random() > 0.35;
+                createGate(isGood, -3.8, zPos);
+                createGate(!isGood, 3.8, zPos);
+            } 
+            else { // 좀비 부대
+                for(let i=0; i<8; i++) {
+                    const zombie = new THREE.Mesh(
+                        new THREE.BoxGeometry(1.2, 2.2, 1.2),
+                        new THREE.MeshPhongMaterial({ color: 0x27ae60 })
+                    );
+                    zombie.position.set(Math.random() * 10 - 5, 1.1, zPos - (i * 4));
+                    zombie.userData = { type: 'ZOMBIE', hp: (baseAtk * soldiers * 0.15) + 150 };
+                    scene.add(zombie);
+                    objects.push(zombie);
+                }
+            }
+        }
+
+        function createGate(isGood, x, z) {
+            const group = new THREE.Group();
+            const geo = new THREE.BoxGeometry(6.5, 9, 0.4);
+            const mat = new THREE.MeshPhongMaterial({ 
+                color: isGood ? 0x00aaff : 0xff4444, 
+                transparent: true, opacity: 0.85 
+            });
+            const frame = new THREE.Mesh(geo, mat);
+            group.add(frame);
+
+            const type = isGood ? (Math.random() > 0.5 ? 'x' : '+') : '-';
+            const val = type === 'x' ? 2 : (type === '+' ? 30 : 20);
+            
+            const txtMat = new THREE.SpriteMaterial({ map: createTextTexture(`${type}${val}`, "white") });
+            const sprite = new THREE.Sprite(txtMat);
+            sprite.scale.set(10, 5, 1);
+            group.add(sprite);
+
+            group.position.set(x, 4.5, z);
+            group.userData = { type: 'GATE', gType: type, val: val, passed: false };
+            scene.add(group);
+            objects.push(group);
+        }
+
+        function shoot() {
+            // 공격력 공식: 병사 수가 많아질수록 총알 개수와 위력 가속
+            const bulletLines = Math.min(Math.floor(Math.sqrt(soldiers)) + 2, 16);
+            for(let i=0; i<bulletLines; i++) {
+                const b = new THREE.Mesh(
+                    new THREE.SphereGeometry(0.35 * playerSize, 8, 8),
+                    new THREE.MeshBasicMaterial({ color: 0xffea00 })
+                );
+                const offset = (i - (bulletLines-1)/2) * 0.85;
+                b.position.set(playerGroup.position.x + offset, 1.8, playerGroup.position.z);
+                
+                const angle = (i - (bulletLines-1)/2) * 0.04;
+                b.userData = { 
+                    power: baseAtk * (1 + soldiers * 0.001), // 병사 수 비례 위력 증가 추가!
+                    vx: Math.sin(angle) * 1.5,
+                    vz: -2.2 
+                };
+                scene.add(b);
+                bullets.push(b);
+            }
+        }
+
+        function animate() {
+            if (isGameOver) return;
+            requestAnimationFrame(animate);
+            frameCount++;
+
+            // 방향키/AD 조작
+            if (keyState['ArrowLeft'] || keyState['KeyA']) targetX -= 0.4;
+            if (keyState['ArrowRight'] || keyState['KeyD']) targetX += 0.4;
+
+            playerGroup.position.x += (targetX - playerGroup.position.x) * 0.15;
+            playerGroup.position.x = Math.max(-5.5, Math.min(5.5, playerGroup.position.x));
+            
+            gameDistance += RUN_SPEED * 0.5;
+            document.getElementById('dist-val').innerText = Math.floor(gameDistance);
+
+            const dynamicFireRate = Math.max(2, 10 - Math.floor(soldiers / 200));
+            if (frameCount % dynamicFireRate === 0) shoot();
+            if (frameCount % SPAWN_INTERVAL === 0) spawnObject();
+
+            // 총알 업데이트
+            for(let i = bullets.length - 1; i >= 0; i--) {
+                const b = bullets[i];
+                b.position.x += b.userData.vx;
+                b.position.z += b.userData.vz;
+                if(b.position.z < -200) {
+                    scene.remove(b);
+                    bullets.splice(i, 1);
+                }
+            }
+
+            // 장애물 업데이트
+            for(let i = objects.length - 1; i >= 0; i--) {
+                const obj = objects[i];
+                obj.position.z += RUN_SPEED;
+
+                // 총알 충돌 감지
+                bullets.forEach((b, bi) => {
+                    const hitDist = obj.userData.type === 'KIT' ? 5 : 2.5;
+                    if (b.position.distanceTo(obj.position) < hitDist) {
+                        if (obj.userData.type === 'KIT' || obj.userData.type === 'ZOMBIE') {
+                            obj.userData.hp -= b.userData.power;
+                            if (obj.userData.type === 'KIT' && frameCount % 3 === 0) {
+                                obj.userData.textSprite.material.map = createTextTexture(Math.max(0, Math.floor(obj.userData.hp)), "#ffff00", true);
+                            }
+                            scene.remove(b);
+                            bullets.splice(bi, 1);
+                        }
+                    }
+                });
+
+                if (obj.userData.hp <= 0) {
+                    if (obj.userData.type === 'KIT') applyKit(obj.userData.reward);
+                    scene.remove(obj);
+                    objects.splice(i, 1);
+                    continue;
+                }
+
+                // 플레이어 충돌 감지
+                if (Math.abs(obj.position.z - playerGroup.position.z) < 2.5) {
+                    if (obj.userData.type === 'GATE' && !obj.userData.passed) {
+                        applyGate(obj.userData);
+                        obj.userData.passed = true;
+                        obj.visible = false;
+                    } 
+                    else if (obj.userData.type === 'ZOMBIE') {
+                        soldiers = Math.max(0, Math.floor(soldiers * 0.75) - 10);
+                        scene.remove(obj);
+                        objects.splice(i, 1);
+                        updateSoldierModels();
+                    }
+                }
+
+                if (obj.position.z > 50) {
+                    scene.remove(obj);
+                    objects.splice(i, 1);
+                }
+            }
+
+            if (soldiers <= 0) gameOver();
+
+            document.getElementById('soldier-count').innerText = soldiers;
+            document.getElementById('total-atk').innerText = Math.floor(baseAtk * soldiers * (1 + soldiers * 0.001)).toLocaleString();
+            
+            renderer.render(scene, camera);
+        }
+
+        function applyGate(data) {
+            if (data.gType === '+') soldiers += data.val;
+            if (data.gType === 'x') soldiers *= data.val;
+            if (data.gType === '-') soldiers = Math.max(1, soldiers - data.val);
+            updateSoldierModels();
+        }
+
+        function applyKit(reward) {
+            if (reward === 'SIZE') playerSize += 0.3;
+            if (reward === 'ATK') baseAtk *= 1.8;
+            if (reward === 'RATE') baseAtk *= 1.4; 
+            updateSoldierModels();
+        }
+
+        function gameOver() {
+            isGameOver = true;
+            document.getElementById('overlay').style.display = 'flex';
+        }
+
+        function restart() {
+            location.reload(); 
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        window.onload = init;
+    </script>
 </body>
 </html>
